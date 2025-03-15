@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube AI Assistant",
+  "version": "1.0",
+  "description": "Ask AI questions while watching YouTube videos",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "https://generativelanguage.googleapis.com/*"
+  ],
+  "web_accessible_resources": [{
+    "resources": ["image.png"],
+    "matches": ["https://www.youtube.com/*"]
+  }],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["content.js"]
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+} 
