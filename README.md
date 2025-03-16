@@ -2,7 +2,7 @@
 
 A Chrome extension that adds an AI assistant to YouTube videos, allowing you to ask questions about video content while watching.
 
-![YouTube AI Assistant](image.png)
+![YouTube AI Assistant](aiassistant.png)
 
 ## Features
 
