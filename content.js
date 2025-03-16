@@ -5,23 +5,50 @@ console.log('YouTube AI Assistant loaded');
 
 function createAIContainer() {
   const container = document.createElement('div');
-  container.style.margin = '10px 0';
-  container.style.display = 'flex';
-  container.style.gap = '10px';
-  container.style.alignItems = 'flex-start';
+  container.style.cssText = `
+    margin: 10px 0;
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    width: 100%;
+    order: -1;
+    z-index: 9999;
+    position: relative;
+    padding: 10px;
+    background-color: rgba(255, 255, 255, 0.9);
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  `;
 
-  // AI Button
+  // AI Button with enhanced styling
   const button = document.createElement('button');
   button.textContent = 'Ask AI Assistant';
   button.style.cssText = `
-    background: #4285f4;
-    color: white;
-    padding: 10px 20px;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    flex-shrink: 0;
+    background: #4285f4 !important;
+    color: white !important;
+    padding: 10px 20px !important;
+    border: none !important;
+    border-radius: 4px !important;
+    cursor: pointer !important;
+    flex-shrink: 0 !important;
+    font-family: 'YouTube Noto', Roboto, Arial, sans-serif !important;
+    font-size: 14px !important;
+    font-weight: 500 !important;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.12) !important;
+    transition: all 0.2s ease !important;
+    min-width: 150px !important;
+    text-align: center !important;
   `;
+
+  // Hover effects
+  button.addEventListener('mouseover', () => {
+    button.style.background = '#357abd !important';
+    button.style.transform = 'translateY(-1px)';
+  });
+  button.addEventListener('mouseout', () => {
+    button.style.background = '#4285f4 !important';
+    button.style.transform = 'none';
+  });
 
   // Input Area
   const inputArea = document.createElement('div');
@@ -462,36 +489,118 @@ function createQuestionUI(container) {
   };
 }
 
-// Main function
+// Enhanced target selection and insertion
 function addAIInterface() {
-  const target = document.querySelector('#below');
+  // Try multiple selectors for different YouTube layouts
+  const selectors = [
+    '#below',                   // Classic desktop layout
+    '#secondary-inner',         // Modern desktop layout
+    '#columns',                 // Alternative layout
+    '#related',                 // Mobile layout
+    'ytd-watch-flexy[player]',  // Fullscreen mode container
+    'ytd-watch-flexy',          // Main container
+    '#above-the-fold',          // Newer layout
+    '#top-row',                 // Another possible container
+    '#primary-inner',           // Another possible container
+    '#primary',                 // Another possible container
+    '#content'                  // Fallback container
+  ];
+
+  let target;
+  for (const selector of selectors) {
+    target = document.querySelector(selector);
+    if (target) {
+      console.log('Found target element with selector:', selector);
+      break;
+    }
+  }
+
   if (target && !document.querySelector('[data-ai-container]')) {
+    console.log('Creating AI container');
     const container = createAIContainer();
     container.setAttribute('data-ai-container', 'true');
-    target.insertBefore(container, target.firstChild);
+    
+    // Insert after the player container
+    const playerContainer = target.querySelector('#player-container, ytd-player, #player');
+    if (playerContainer) {
+      console.log('Inserting after player container');
+      playerContainer.insertAdjacentElement('afterend', container);
+    } else {
+      // Fallback insertion
+      console.log('Using fallback insertion');
+      target.insertAdjacentElement('afterbegin', container);
+    }
+  } else if (!target) {
+    console.error('No target element found for AI container');
+  } else {
+    console.log('AI container already exists');
   }
 }
 
-// Mutation Observer for SPA
+// Enhanced Mutation Observer configuration
 const observer = new MutationObserver((mutations) => {
-  addAIInterface();
-  // Check for transcript container changes
   mutations.forEach(mutation => {
-    if (mutation.target.matches('ytd-transcript-renderer')) {
-      console.log('Transcript updated');
+    if (mutation.type === 'childList') {
+      // Check for relevant containers being added
+      const addedNodes = Array.from(mutation.addedNodes);
+      const relevantContainers = addedNodes.filter(node => 
+        node.nodeType === 1 && 
+        (node.matches('ytd-watch-flexy, #secondary, #below') ||
+         node.querySelector('ytd-watch-flexy, #secondary, #below'))
+      );
+      
+      if (relevantContainers.length > 0) {
+        addAIInterface();
+      }
     }
   });
 });
 
-observer.observe(document.body, {
-  childList: true,
-  subtree: true,
-  attributes: true,
-  characterData: true
+// Observe both document and body for maximum coverage
+[document.documentElement, document.body].forEach(node => {
+  observer.observe(node, {
+    childList: true,
+    subtree: true,
+    attributes: false,
+    characterData: false
+  });
 });
 
-// Initial setup
-addAIInterface();
+// Periodic check for SPA navigation
+let lastURL = window.location.href;
+setInterval(() => {
+  if (window.location.href !== lastURL) {
+    console.log('URL changed, re-adding AI interface');
+    lastURL = window.location.href;
+    
+    // Wait for the page to load
+    setTimeout(() => {
+      addAIInterface();
+    }, 1000);
+  }
+}, 1000);
+
+// Initial setup with retry logic
+let initAttempts = 0;
+const maxInitAttempts = 10; // Increase max attempts
+const initInterval = setInterval(() => {
+  if (initAttempts >= maxInitAttempts) {
+    console.log('Max init attempts reached, clearing interval');
+    clearInterval(initInterval);
+    return;
+  }
+  
+  initAttempts++;
+  console.log(`Init attempt ${initAttempts}/${maxInitAttempts}`);
+  
+  if (document.querySelector('ytd-watch-flexy, #player-container, #player')) {
+    console.log('Found player element, adding AI interface');
+    addAIInterface();
+    clearInterval(initInterval);
+  } else {
+    console.log('Player element not found yet, retrying...');
+  }
+}, 1000); // Increase interval to 1 second
 
 // Function to extract transcript from DOM
 function getVideoTranscriptFromDOM() {
@@ -797,4 +906,5 @@ function updateCreateQuestionUI(createQuestionUI) {
 
 // IMPORTANT: Create function pointers first to avoid reference errors
 const enhancedCreateQuestionUI = updateCreateQuestionUI(createQuestionUI);
-export { enhancedCreateQuestionUI as createQuestionUI }; 
+// Replace the original function with the enhanced version
+window.createQuestionUI = enhancedCreateQuestionUI; 
