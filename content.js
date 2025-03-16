@@ -394,9 +394,27 @@ function createQuestionUI(container) {
     const question = questionInput.value.trim();
     if (!question) return;
 
-    responseDiv.textContent = 'Loading...';
+    responseDiv.textContent = 'Analyzing video context...';
     
     try {
+      // Get video metadata
+      const metadata = getVideoMetadata();
+      
+      // Get video context using the more robust method
+      const transcript = await fetchYouTubeTranscript();
+      const currentTime = getCurrentVideoTime();
+      
+      const relevantTranscript = transcript.filter(entry => {
+        const entryTime = parseYouTubeTime(entry.time);
+        return entryTime <= currentTime;
+      });
+
+      if (relevantTranscript.length === 0) {
+        responseDiv.textContent = 'Analyzing question with general knowledge...';
+      } else {
+        responseDiv.textContent = `Analyzing with context from ${metadata.title}...`;
+      }
+
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${localStorage.getItem('geminiApiKey')}`, {
         method: 'POST',
         headers: {
@@ -404,7 +422,27 @@ function createQuestionUI(container) {
         },
         body: JSON.stringify({
           contents: [{
-            parts: [{ text: question }]
+            parts: [{ 
+              text: `You are a concise educational assistant helping with YouTube video content.
+              
+              Video: "${metadata.title}" by ${metadata.channel}
+              Current timestamp: ${formatTime(currentTime)}
+              
+              ${relevantTranscript.length > 0 ? 
+                `===TRANSCRIPT UP TO CURRENT TIMESTAMP===\n${relevantTranscript.map(t => `[${t.time}] ${t.text}`).join('\n')}\n===END TRANSCRIPT===\n\n` : 
+                'No transcript available.\n'
+              }
+              
+              Question: ${question}
+              
+              Instructions:
+              1. Answer the question directly and concisely, focusing only on what was asked
+              2. When referencing video content, use brief quotes with timestamps
+              3. If video context isn't relevant, provide a short, clear answer from general knowledge
+              4. Avoid unnecessary background information unless specifically requested
+              5. Use bullet points for complex explanations
+              6. Keep responses brief but complete - focus on clarity over comprehensiveness`
+            }]
           }]
         })
       });
@@ -412,9 +450,8 @@ function createQuestionUI(container) {
       const data = await response.json();
       const responseText = data.candidates?.[0].content.parts[0].text || 'No response generated';
       responseDiv.textContent = responseText;
-      
-      // Speak the response if in voice mode
       speakText(responseText);
+      
     } catch (error) {
       responseDiv.textContent = `Error: ${error.message}`;
       if (error.message.includes(401)) {
@@ -436,14 +473,328 @@ function addAIInterface() {
 }
 
 // Mutation Observer for SPA
-const observer = new MutationObserver(() => {
+const observer = new MutationObserver((mutations) => {
   addAIInterface();
+  // Check for transcript container changes
+  mutations.forEach(mutation => {
+    if (mutation.target.matches('ytd-transcript-renderer')) {
+      console.log('Transcript updated');
+    }
+  });
 });
 
 observer.observe(document.body, {
   childList: true,
-  subtree: true
+  subtree: true,
+  attributes: true,
+  characterData: true
 });
 
 // Initial setup
-addAIInterface(); 
+addAIInterface();
+
+// Function to extract transcript from DOM
+function getVideoTranscriptFromDOM() {
+  try {
+    const transcriptItems = Array.from(document.querySelectorAll('ytd-transcript-segment-renderer'));
+    return transcriptItems.map(item => {
+      const timeElement = item.querySelector('#time');
+      const textElement = item.querySelector('#text');
+      return {
+        time: timeElement ? timeElement.textContent.trim() : '0:00',
+        text: textElement ? textElement.textContent.trim() : ''
+      };
+    }).filter(entry => entry.text.length > 0);
+  } catch (error) {
+    console.error('Error retrieving transcript from DOM:', error);
+    return [];
+  }
+}
+
+// Function to get transcript from YouTube's initial data
+function getVideoTranscriptFromInitialData() {
+  try {
+    // Try to get transcript from YouTube's initial data
+    const scriptTag = document.querySelector('script#ytInitialData');
+    if (scriptTag) {
+      const data = JSON.parse(scriptTag.textContent);
+      const segments = data?.contents?.twoColumnWatchNextResults?.results?.results?.contents
+        ?.find(c => c.videoSecondaryInfoRenderer)
+        ?.videoSecondaryInfoRenderer?.metadataRowContainer?.metadataRowContainerRenderer?.rows
+        ?.find(r => r.metadataRowRenderer?.title?.simpleText === 'Transcript')
+        ?.metadataRowRenderer?.contents[0]
+        ?.expandableMetadataRenderer?.content?.transcriptContentRenderer?.content
+        ?.transcriptSearchPanelRenderer?.body?.transcriptSegmentListRenderer?.initialSegments;
+
+      if (segments) {
+        return segments.map(segment => ({
+          time: segment.transcriptSegmentRenderer?.startTimeText?.simpleText || '0:00',
+          text: segment.transcriptSegmentRenderer?.snippet?.runs[0]?.text || ''
+        })).filter(entry => entry.text.length > 0);
+      }
+    }
+    return [];
+  } catch (error) {
+    console.error('Error retrieving transcript from initial data:', error);
+    return [];
+  }
+}
+
+// Add a function to fetch transcripts directly from YouTube API
+async function fetchYouTubeTranscript() {
+  try {
+    // Get video ID from URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const videoId = urlParams.get('v');
+    
+    if (!videoId) {
+      console.log('No video ID found');
+      return [];
+    }
+    
+    // Method 1: Try direct transcript API first (most reliable)
+    try {
+      console.log('Trying direct API method...');
+      const transcriptTrackUrl = `https://www.youtube.com/api/timedtext?lang=en&v=${videoId}`;
+      
+      const response = await fetch(transcriptTrackUrl);
+      if (response.ok && response.status === 200) {
+        const xmlText = await response.text();
+        if (xmlText && xmlText.length > 0) {
+          const parser = new DOMParser();
+          const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+          const textElements = xmlDoc.getElementsByTagName('text');
+          
+          if (textElements && textElements.length > 0) {
+            console.log(`Found ${textElements.length} transcript segments via API`);
+            const transcript = Array.from(textElements).map(text => ({
+              time: formatTime(parseFloat(text.getAttribute('start') || 0)),
+              duration: parseFloat(text.getAttribute('dur') || '0'),
+              text: text.textContent.trim()
+            })).filter(entry => entry.text.length > 0);
+            
+            if (transcript.length > 0) {
+              return transcript;
+            }
+          }
+        }
+      }
+      console.log('API method failed or returned empty transcript');
+    } catch (apiError) {
+      console.error('Error using direct API method:', apiError);
+    }
+    
+    // Method 2: Try YouTube's internal data if API fails
+    try {
+      console.log('Trying initial data method...');
+      const initialDataTranscript = getVideoTranscriptFromInitialData();
+      if (initialDataTranscript.length > 0) {
+        console.log(`Found ${initialDataTranscript.length} transcript segments via initial data`);
+        return initialDataTranscript;
+      }
+      console.log('Initial data method failed or returned empty transcript');
+    } catch (dataError) {
+      console.error('Error using initial data method:', dataError);
+    }
+    
+    // Method 3: Last resort - DOM method
+    try {
+      console.log('Trying DOM scraping method...');
+      const domTranscript = getVideoTranscriptFromDOM();
+      if (domTranscript.length > 0) {
+        console.log(`Found ${domTranscript.length} transcript segments via DOM scraping`);
+        return domTranscript;
+      }
+      console.log('DOM method failed or returned empty transcript');
+    } catch (domError) {
+      console.error('Error using DOM method:', domError);
+    }
+    
+    // If all methods fail
+    console.warn('All transcript extraction methods failed');
+    return [];
+    
+  } catch (error) {
+    console.error('General error fetching transcript:', error);
+    return [];
+  }
+}
+
+// Extract video metadata for better context
+function getVideoMetadata() {
+  try {
+    const titleElement = document.querySelector('h1.ytd-watch-metadata');
+    const title = titleElement ? titleElement.textContent.trim() : '';
+    
+    const channelElement = document.querySelector('#channel-name a');
+    const channel = channelElement ? channelElement.textContent.trim() : '';
+    
+    // Get topic/category if available
+    const categoryElement = document.querySelector('meta[itemprop="genre"]');
+    const category = categoryElement ? categoryElement.getAttribute('content') : '';
+
+    // Get video ID
+    const urlParams = new URLSearchParams(window.location.search);
+    const videoId = urlParams.get('v') || '';
+    
+    return {
+      title,
+      channel,
+      category,
+      url: window.location.href,
+      videoId
+    };
+  } catch (error) {
+    console.error('Error getting video metadata:', error);
+    return {
+      title: '',
+      channel: '',
+      category: '',
+      url: window.location.href,
+      videoId: ''
+    };
+  }
+}
+
+function getCurrentVideoTime() {
+  const video = document.querySelector('video');
+  return video ? Math.floor(video.currentTime) : 0;
+}
+
+function formatTime(seconds) {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+// Function to parse YouTube timestamp
+function parseYouTubeTime(timeString) {
+  try {
+    const parts = timeString.split(':').reverse();
+    return parts.reduce((acc, part, index) => {
+      return acc + parseInt(part, 10) * Math.pow(60, index);
+    }, 0);
+  } catch (error) {
+    console.error('Error parsing time:', error, timeString);
+    return 0;
+  }
+}
+
+// This replaces the submit handler implementation inside createQuestionUI
+function createSubmitHandler(questionInput, responseDiv, speakText) {
+  return async function() {
+    const question = questionInput.value.trim();
+    if (!question) return;
+
+    responseDiv.textContent = 'Analyzing video context...';
+    
+    try {
+      // Get video metadata
+      const metadata = getVideoMetadata();
+      
+      // Get video context using the more robust method
+      const transcript = await fetchYouTubeTranscript();
+      const currentTime = getCurrentVideoTime();
+      
+      const relevantTranscript = transcript.filter(entry => {
+        const entryTime = parseYouTubeTime(entry.time);
+        return entryTime <= currentTime;
+      });
+
+      if (relevantTranscript.length === 0) {
+        responseDiv.textContent = 'Analyzing question with general knowledge...';
+      } else {
+        responseDiv.textContent = `Analyzing with context from ${metadata.title || 'this video'}...`;
+      }
+
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${localStorage.getItem('geminiApiKey')}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{ 
+              text: `You are a concise educational assistant helping with YouTube video content.
+              
+              Video: "${metadata.title}" by ${metadata.channel}
+              Current timestamp: ${formatTime(currentTime)}
+              
+              ${relevantTranscript.length > 0 ? 
+                `===TRANSCRIPT UP TO CURRENT TIMESTAMP===\n${relevantTranscript.map(t => `[${t.time}] ${t.text}`).join('\n')}\n===END TRANSCRIPT===\n\n` : 
+                'No transcript available.\n'
+              }
+              
+              Question: ${question}
+              
+              Instructions:
+              1. Answer the question directly and concisely, focusing only on what was asked
+              2. When referencing video content, use brief quotes with timestamps
+              3. If video context isn't relevant, provide a short, clear answer from general knowledge
+              4. Avoid unnecessary background information unless specifically requested
+              5. Use bullet points for complex explanations
+              6. Keep responses brief but complete - focus on clarity over comprehensiveness`
+            }]
+          }]
+        })
+      });
+
+      const data = await response.json();
+      const responseText = data.candidates?.[0].content.parts[0].text || 'No response generated';
+      responseDiv.textContent = responseText;
+      speakText(responseText);
+      
+    } catch (error) {
+      responseDiv.textContent = `Error: ${error.message}`;
+      if (error.message.includes(401)) {
+        localStorage.removeItem('geminiApiKey');
+        location.reload();
+      }
+    }
+  };
+}
+
+// Add this to the createQuestionUI function after all UI elements are created
+function updateCreateQuestionUI(createQuestionUI) {
+  return function(container) {
+    // Call the original function first
+    const result = createQuestionUI(container);
+    
+    // Find the elements we need to update
+    const submitButton = container.querySelector('button:not([title*="Speak"]):not([title*="Toggle"])');
+    const questionInput = container.querySelector('textarea');
+    const responseDiv = container.querySelector('div[style*="overflow-y: auto"]');
+    
+    // Get the speakText function from the original scope
+    const synth = window.speechSynthesis;
+    const outputModeToggle = container.querySelector('button[title*="Toggle"]');
+    const outputModeText = outputModeToggle ? outputModeToggle.textContent : '';
+    const outputMode = outputModeText.includes('Voice') ? 'voice' : 'text';
+    
+    let currentUtterance = null;
+    
+    function speakText(text) {
+      if (synth && outputMode === 'voice') {
+        if (currentUtterance) {
+          synth.cancel();
+        }
+        currentUtterance = new SpeechSynthesisUtterance(text);
+        currentUtterance.rate = 1.0;
+        currentUtterance.pitch = 1.0;
+        synth.speak(currentUtterance);
+      }
+    }
+    
+    // Create a new submit handler
+    if (submitButton && questionInput && responseDiv) {
+      const newSubmitHandler = createSubmitHandler(questionInput, responseDiv, speakText);
+      submitButton.onclick = newSubmitHandler;
+    }
+    
+    return result;
+  };
+}
+
+// IMPORTANT: Create function pointers first to avoid reference errors
+const enhancedCreateQuestionUI = updateCreateQuestionUI(createQuestionUI);
+export { enhancedCreateQuestionUI as createQuestionUI }; 
